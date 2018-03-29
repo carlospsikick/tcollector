@@ -227,6 +227,11 @@ class TcollectorAgent(eossdk.AgentHandler,
       fd = self.vrf_mgr_.socket_at(family, socktype, proto, vrf)
       return socket._socketobject(_sock=socket.fromfd(fd, family, socktype, proto))
 
+   def on_hostname(self, hostname):
+      debug("Hostname changed to", hostname)
+      self.tags_["host"] = hostname
+      self.sender_thread_.tags = sorted(self.tags_.iteritems())
+
    def start(self):
       tcollector = self.module_
       tcollector.ALIVE = True
@@ -247,7 +252,8 @@ class TcollectorAgent(eossdk.AgentHandler,
       modules = tcollector.load_etc_dir(options, self.tags_)
 
       reader = tcollector.ReaderThread(options.dedupinterval,
-                                       options.evictinterval)
+                                       options.evictinterval,
+                                       options.deduponlyzero)
       self.reader_thread_ = reader
       reader.start()
       debug("ReaderThread startup complete")

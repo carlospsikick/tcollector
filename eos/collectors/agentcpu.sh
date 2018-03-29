@@ -11,17 +11,50 @@
 # of the GNU Lesser General Public License along with this program.  If not,
 # see <http://www.gnu.org/licenses/>.
 
+agents='
+Acl
+Arp
+Bfd
+CliSessionMgr
+ConfigAgent
+Ebra
+Fru
+Ira
+LacpTxAgent
+Lag
+Lldp
+Rib
+SandCounters
+SandFabric
+SandFap
+SandMact
+Sflow
+Snmp
+Stp
+StpTopology
+Strata
+StrataL2
+StrataL3
+SuperServer
+Sysdb
+TopoAgent
+XcvrAgent
+ribd
+'
+
 while :; do
-  for task in Sysdb Arp Ebra Ira Stp StpTopology TopoAgent ribd; do
+  for task in $agents; do
+    usercpu=0
+    systcpu=0
     for pid in `pidof $task`; do
       ts=`date +%s`
-      eval `awk '{print "ppid=" $4 ";usercpu=" $14 "; systcpu=" $15 ";"}' /proc/$pid/stat`
+      eval `awk '{print "ppid=" $4 ";usercpu=$((usercpu+" $14 ")); systcpu=$((systcpu+" $15 "));"}' /proc/$pid/stat`
       if fgrep -q $task /proc/$ppid/stat; then
         continue  # We are a fork of the agent.
       fi
-      echo "proc.stat.cpu.task $ts $usercpu type=user task=$task"
-      echo "proc.stat.cpu.task $ts $systcpu type=system task=$task"
     done
+    echo "proc.stat.cpu.task $ts $usercpu type=user task=$task"
+    echo "proc.stat.cpu.task $ts $systcpu type=system task=$task"
   done
   sleep 5
 done

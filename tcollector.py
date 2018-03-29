@@ -266,7 +266,7 @@ class ReaderThread(threading.Thread):
        All data read is put into the self.readerq Queue, which is
        consumed by the SenderThread."""
 
-    def __init__(self, dedupinterval, evictinterval):
+    def __init__(self, dedupinterval, evictinterval, deduponlyzero):
         """Constructor.
             Args:
               dedupinterval: If a metric sends the same value over successive
@@ -278,6 +278,7 @@ class ReaderThread(threading.Thread):
                 combination of (metric, tags).  Values older than
                 evictinterval will be removed from the cache to save RAM.
                 Invariant: evictinterval > dedupinterval
+              deduponlyzero: do the above only for 0 values.
         """
         assert evictinterval > dedupinterval, "%r <= %r" % (evictinterval,
                                                             dedupinterval)
@@ -288,6 +289,7 @@ class ReaderThread(threading.Thread):
         self.lines_dropped = 0
         self.dedupinterval = dedupinterval
         self.evictinterval = evictinterval
+        self.deduponlyzero = deduponlyzero
 
     def run(self):
         """Main loop for this thread.  Just reads from collectors,
@@ -323,6 +325,10 @@ class ReaderThread(threading.Thread):
         """Parses the given line and appends the result to the reader queue."""
 
         self.lines_collected += 1
+        # If the line contains more than a whitespace between
+        # parameters, it won't be interpeted.
+        while '  ' in line:
+            line = line.replace('  ', ' ')
 
         col.lines_received += 1
         if len(line) >= 1024:  # Limit in net.opentsdb.tsd.PipelineFactory
@@ -379,7 +385,8 @@ class ReaderThread(threading.Thread):
                 # we send the timestamp when this metric first became the current
                 # value instead of the last.  Fall through if we reach
                 # the dedup interval so we can print the value.
-                if (col.values[key][0] == value and
+                if ((not self.deduponlyzero or (self.deduponlyzero and float(value) == 0.0)) and
+                    col.values[key][0] == value and
                     (timestamp - col.values[key][3] < self.dedupinterval)):
                     col.values[key] = (value, True, line, col.values[key][3])
                     return
@@ -418,7 +425,7 @@ class SenderThread(threading.Thread):
 
     def __init__(self, reader, dryrun, hosts, self_report_stats, tags,
                  reconnectinterval=0, http=False, http_username=None,
-                 http_password=None, ssl=False, maxtags=8):
+                 http_password=None, http_api_path=None, ssl=False, maxtags=8):
         """Constructor.
 
         Args:
@@ -439,6 +446,7 @@ class SenderThread(threading.Thread):
         self.reader = reader
         self.tags = sorted(tags.items()) # dictionary transformed to list
         self.http = http
+        self.http_api_path = http_api_path
         self.http_username = http_username
         self.http_password = http_password
         self.ssl = ssl
@@ -722,6 +730,16 @@ class SenderThread(threading.Thread):
         # FIXME: we should be reading the result at some point to drain
         # the packets out of the kernel's queue
 
+    def build_http_url(self):
+        if self.ssl:
+            protocol = "https"
+        else:
+            protocol = "http"
+        details=""
+        if LOG.level == logging.DEBUG:
+            details="?details"
+        return "%s://%s:%s/%s%s" % (protocol, self.host, self.port, self.http_api_path, details)
+
     def send_data_via_http(self):
         """Sends outstanding data in self.sendq to TSD in one HTTP API call."""
         metrics = []
@@ -761,20 +779,10 @@ class SenderThread(threading.Thread):
 
         if((self.current_tsd == -1) or (len(self.hosts) > 1)):
             self.pick_connection()
-        # print "Using server: %s:%s" % (self.host, self.port)
-        # url = "http://%s:%s/api/put?details" % (self.host, self.port)
-        # print "Url is %s" % url
-        if self.ssl:
-            protocol = "https"
-        else:
-            protocol = "http"
-        LOG.debug("Sending metrics to %s://%s:%s/api/put?details",
-                  protocol, self.host, self.port)
-        details=""
-        if LOG.level == logging.DEBUG:
-            details="?details"
-        req = urllib2.Request("%s://%s:%s/api/put%s" % (
-            protocol, self.host, self.port, details))
+
+        url = self.build_http_url()
+        LOG.debug("Sending metrics to url", url)
+        req = urllib2.Request(url)
         if self.http_username and self.http_password:
           req.add_header("Authorization", "Basic %s"
                          % base64.b64encode("%s:%s" % (self.http_username, self.http_password)))
@@ -825,6 +833,7 @@ def parse_cmdline(argv):
             'no_tcollector_stats': False,
             'evictinterval': 6000,
             'dedupinterval': 300,
+            'deduponlyzero': False,
             'allowed_inactivity_time': 600,
             'dryrun': False,
             'maxtags': 8,
@@ -835,6 +844,7 @@ def parse_cmdline(argv):
             'port': 4242,
             'pidfile': '/var/run/tcollector.pid',
             'http': False,
+            'http_api_path': "api/put",
             'tags': [],
             'remove_inactive_collectors': False,
             'host': 'localhost',
@@ -898,6 +908,9 @@ def parse_cmdline(argv):
                            'datapoints are suppressed before sending to the TSD. '
                            'Use zero to disable. '
                            'default=%default')
+    parser.add_option('--dedup-only-zero', dest='deduponlyzero', action='store_true',
+                        default=defaults['deduponlyzero'],
+                        help='Only dedup 0 values.')
     parser.add_option('--evict-interval', dest='evictinterval', type='int',
                         default=defaults['evictinterval'], metavar='EVICTINTERVAL',
                         help='Number of seconds after which to remove cached '
@@ -928,6 +941,8 @@ def parse_cmdline(argv):
                         help='The maximum number of tags to send to our TSD Instances')
     parser.add_option('--http', dest='http', action='store_true', default=defaults['http'],
                         help='Send the data via the http interface')
+    parser.add_option('--http-api-path', dest='http_api_path', type='str',
+                      default=defaults['http_api_path'], help='URL path to use for HTTP requests to TSD.')
     parser.add_option('--http-username', dest='http_username', default=defaults['http_username'],
                       help='Username to use for HTTP Basic Auth when sending the data via HTTP')
     parser.add_option('--http-password', dest='http_password', default=defaults['http_password'],
@@ -1036,7 +1051,7 @@ def main(argv):
 
     # at this point we're ready to start processing, so start the ReaderThread
     # so we can have it running and pulling in data for us
-    reader = ReaderThread(options.dedupinterval, options.evictinterval)
+    reader = ReaderThread(options.dedupinterval, options.evictinterval, options.deduponlyzero)
     reader.start()
 
     # prepare list of (host, port) of TSDs given on CLI
@@ -1061,7 +1076,7 @@ def main(argv):
     sender = SenderThread(reader, options.dryrun, options.hosts,
                           not options.no_tcollector_stats, tags, options.reconnectinterval,
                           options.http, options.http_username,
-                          options.http_password, options.ssl, options.maxtags)
+                          options.http_password, options.http_api_path, options.ssl, options.maxtags)
     sender.start()
     LOG.info('SenderThread startup complete')
 
