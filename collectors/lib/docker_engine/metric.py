@@ -11,29 +11,32 @@
 # General Public License for more details.  You should have received a copy
 # of the GNU Lesser General Public License along with this program.  If not,
 # see <http://www.gnu.org/licenses/>.
-"""Imports Docker stats from the docker-api"""
 
-import sys
+import time
 
 from collectors.etc import docker_engine_conf
-from collectors.lib.docker_engine.docker_metrics import DockerMetrics
 
 CONFIG = docker_engine_conf.get_config()
-ENABLED = docker_engine_conf.enabled()
-METRICS_PATH = CONFIG['metrics_path']
+DEFAULT_DIMS = CONFIG['default_dims']
 
 
-def main():
-    if not ENABLED:
-        sys.stderr.write("Docker-engine collector is not enabled")
-        sys.exit(13)
+class Metric(object):
+    def __init__(self, name, etime, value, tags=None):
+        self.name = name
+        self.value = value
+        self.event_time = etime
+        if tags is None:
+            self.dims = set([])
+        else:
+            self.dims = set(tags)
+        self.dims.update(set(DEFAULT_DIMS))
 
-    """docker_cpu main loop"""
-    cli = DockerMetrics(METRICS_PATH)
+    def add_dims(self, dims):
+        self.dims.update(set(dims))
 
-    for m in cli.get_endpoint():
-        print m.get_metric_lines()
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+    def get_metric_lines(self):
+        """ return in OpenTSDB format
+        <name> <time_epoch> <value> [key=val] [key1=val1]...
+        """
+        m = "%s %s %s" % (self.name, int(time.mktime(self.event_time)), self.value)
+        return "%s %s" % (m, " ".join(sorted(list(self.dims))))
